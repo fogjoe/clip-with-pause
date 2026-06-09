@@ -1,0 +1,43 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    environment:
+      CLIP_OUTPUT_DIR: /app/data/output
+      CORS_ORIGINS: https://audio.fogjoe.com
+      OUTPUT_TTL_SECONDS: 86400
+      TASK_MAX_WORKERS: 2
+      MAX_CLIP_SECONDS: 600
+    volumes:
+      - clip-output:/app/data/output
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+      args:
+        BACKEND_INTERNAL_URL: http://backend:8000
+    environment:
+      BACKEND_INTERNAL_URL: http://backend:8000
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --protocol http2 --url http://frontend:3000 run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  clip-output:
