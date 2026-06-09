@@ -9,8 +9,15 @@ services:
       OUTPUT_TTL_SECONDS: 86400
       TASK_MAX_WORKERS: 2
       MAX_CLIP_SECONDS: 600
+      YTDLP_COOKIES_FILE: ${YTDLP_COOKIES_FILE:-}
+      YTDLP_JS_RUNTIMES: ${YTDLP_JS_RUNTIMES:-node}
+      YTDLP_PROXY: ${YTDLP_PROXY:-}
+      YTDLP_SLEEP_INTERVAL_REQUESTS: ${YTDLP_SLEEP_INTERVAL_REQUESTS:-1}
+      YTDLP_SUBTITLE_RETRIES: ${YTDLP_SUBTITLE_RETRIES:-4}
+      YTDLP_SUBTITLE_RETRY_BASE_SECONDS: ${YTDLP_SUBTITLE_RETRY_BASE_SECONDS:-3}
     volumes:
       - clip-output:/app/data/output
+      - ./backend/cookies:/app/cookies
     ports:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped

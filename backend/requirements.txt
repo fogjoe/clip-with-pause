@@ -1,5 +1,5 @@
 fastapi>=0.115,<0.116
 uvicorn[standard]>=0.34,<0.35
 yt-dlp>=2025.1.15
+yt-dlp-ejs>=0.8,<0.9
 static-ffmpeg
-

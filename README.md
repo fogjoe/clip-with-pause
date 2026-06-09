@@ -103,6 +103,7 @@ Backend health: http://127.0.0.1:8000/api/health
 ```
 
 The Docker images use official Python and Node base images that support Linux ARM64 on Apple Silicon.
+The backend image installs Node.js 22 and `yt-dlp-ejs` so `yt-dlp` can solve YouTube JavaScript challenges required for some videos.
 
 ## Configuration
 
@@ -112,4 +113,36 @@ The Docker images use official Python and Node base images that support Linux AR
 - `TASK_MAX_WORKERS`: Number of concurrent backend processing workers.
 - `MAX_CLIP_SECONDS`: Maximum accepted clip length.
 - `YTDLP_COOKIES_FILE`: Optional cookie file path for `yt-dlp`.
+- `YTDLP_JS_RUNTIMES`: JavaScript runtime used by `yt-dlp` challenge solving. Defaults to `node`.
+- `YTDLP_PROXY`: Optional proxy URL for `yt-dlp`, for example `socks5://host.docker.internal:7890`.
+- `YTDLP_SLEEP_INTERVAL_REQUESTS`: Delay between `yt-dlp` HTTP requests.
+- `YTDLP_SUBTITLE_RETRIES`: Number of retry attempts for subtitle downloads.
+- `YTDLP_SUBTITLE_RETRY_BASE_SECONDS`: Base delay for subtitle retry backoff.
 - `FFMPEG_BINARY`: Optional explicit FFmpeg binary path.
+
+## YouTube Rate Limits
+
+YouTube can return `HTTP Error 429: Too Many Requests`, especially for subtitle downloads. The backend reduces request pressure by reusing the first `yt-dlp` extraction result and retrying direct json3 subtitle downloads with backoff.
+
+If 429 continues, export browser cookies to Netscape format, place the file at:
+
+```text
+backend/cookies/youtube-cookies.txt
+```
+
+Then set this in `.env`:
+
+```env
+YTDLP_COOKIES_FILE=/app/cookies/youtube-cookies.txt
+YTDLP_SLEEP_INTERVAL_REQUESTS=2
+YTDLP_SUBTITLE_RETRIES=5
+YTDLP_SUBTITLE_RETRY_BASE_SECONDS=5
+```
+
+Restart the backend:
+
+```bash
+docker compose up -d --build backend
+```
+
+`backend/cookies/youtube-cookies.txt` is the path on the Mac host. `/app/cookies/youtube-cookies.txt` is the path inside the backend container and is the value that should be used for `YTDLP_COOKIES_FILE`.

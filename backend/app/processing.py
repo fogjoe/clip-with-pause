@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,6 +50,19 @@ class ClipProcessingResult:
     subtitles_path: Path
     sentences: list[dict[str, Any]]
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class AudioDownloadResult:
+    source_path: Path
+    info: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SubtitleTrack:
+    language: str
+    source: str
+    url: str
 
 
 def parse_timestamp(value: str | float | int) -> float:
@@ -104,11 +118,11 @@ def process_clip_task(task_id: str, job: ClipJob, output_root: Path, ttl_seconds
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        audio_source = _download_audio(job.url, temp_dir)
+        audio_download = _download_audio(job.url, temp_dir)
         audio_output = output_dir / "clip.mp3"
-        _cut_audio_to_mp3(audio_source, audio_output, job.start_seconds, job.end_seconds)
+        _cut_audio_to_mp3(audio_download.source_path, audio_output, job.start_seconds, job.end_seconds)
 
-        subtitle_file = _download_json3_subtitles(job.url, job.subtitle_language, temp_dir)
+        subtitle_file = _download_json3_subtitles(audio_download.info, job.subtitle_language, temp_dir)
         subtitle_data = load_json3(subtitle_file)
         sentences = extract_sentences(subtitle_data, job.start_seconds, job.end_seconds)
         if not sentences:
@@ -157,10 +171,12 @@ def _base_ydl_options(temp_dir: Path) -> dict[str, Any]:
     options: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,
         "noplaylist": True,
         "cachedir": False,
         "retries": 5,
         "fragment_retries": 5,
+        "sleep_interval_requests": float(os.getenv("YTDLP_SLEEP_INTERVAL_REQUESTS", "1")),
         "extractor_args": {
             "youtube": {
                 "player_client": YOUTUBE_CLIENTS,
@@ -171,14 +187,44 @@ def _base_ydl_options(temp_dir: Path) -> dict[str, Any]:
         },
     }
 
+    js_runtimes = _configured_js_runtimes()
+    if js_runtimes:
+        options["js_runtimes"] = js_runtimes
+
     cookies_file = os.getenv("YTDLP_COOKIES_FILE")
     if cookies_file:
         options["cookiefile"] = cookies_file
 
+    proxy = os.getenv("YTDLP_PROXY")
+    if proxy:
+        options["proxy"] = proxy
+
     return options
 
 
-def _download_audio(url: str, temp_dir: Path) -> Path:
+def _configured_js_runtimes() -> dict[str, dict[str, str]]:
+    raw_value = os.getenv("YTDLP_JS_RUNTIMES", "node")
+    runtimes: dict[str, dict[str, str]] = {}
+
+    for item in raw_value.split(","):
+        runtime = item.strip()
+        if not runtime:
+            continue
+
+        name, separator, configured_path = runtime.partition(":")
+        name = name.strip().lower()
+        if not name:
+            continue
+
+        config: dict[str, str] = {}
+        if separator and configured_path.strip():
+            config["path"] = configured_path.strip()
+        runtimes[name] = config
+
+    return runtimes
+
+
+def _download_audio(url: str, temp_dir: Path) -> AudioDownloadResult:
     options = _base_ydl_options(temp_dir)
     options.update(
         {
@@ -194,7 +240,7 @@ def _download_audio(url: str, temp_dir: Path) -> Path:
 
         prepared_path = Path(downloader.prepare_filename(info))
         if prepared_path.exists():
-            return prepared_path
+            return AudioDownloadResult(source_path=prepared_path, info=info)
 
     candidates = [
         path
@@ -203,41 +249,67 @@ def _download_audio(url: str, temp_dir: Path) -> Path:
     ]
     if not candidates:
         raise ProcessingError("yt-dlp did not produce an audio file.")
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    return AudioDownloadResult(source_path=max(candidates, key=lambda path: path.stat().st_mtime), info=info)
 
 
-def _download_json3_subtitles(url: str, language: str, temp_dir: Path) -> Path:
+def _download_json3_subtitles(info: dict[str, Any], language: str, temp_dir: Path) -> Path:
     subtitle_dir = temp_dir / "subtitles"
     subtitle_dir.mkdir(parents=True, exist_ok=True)
-
+    subtitle_track = _select_json3_subtitle_track(info, language)
+    subtitle_path = subtitle_dir / f"{info.get('id', 'subtitle')}.{subtitle_track.language}.json3"
     options = _base_ydl_options(temp_dir)
-    options.update(
-        {
-            "skip_download": True,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitlesformat": "json3",
-            "subtitleslangs": [language],
-            "outtmpl": str(subtitle_dir / "%(id)s.%(ext)s"),
-        }
-    )
 
-    with yt_dlp.YoutubeDL(options) as downloader:
-        info = downloader.extract_info(url, download=True)
+    subtitle_retries = int(os.getenv("YTDLP_SUBTITLE_RETRIES", "4"))
+    retry_base_seconds = float(os.getenv("YTDLP_SUBTITLE_RETRY_BASE_SECONDS", "3"))
+    last_error: Exception | None = None
 
-    subtitle_files = sorted(subtitle_dir.glob("*.json3"))
-    if subtitle_files:
-        exact_matches = [path for path in subtitle_files if f".{language}." in path.name]
-        return exact_matches[0] if exact_matches else subtitle_files[0]
+    for attempt in range(subtitle_retries + 1):
+        try:
+            with yt_dlp.YoutubeDL(options) as downloader:
+                response = downloader.urlopen(subtitle_track.url)
+                subtitle_bytes = response.read()
+            if not subtitle_bytes:
+                raise ProcessingError("The selected subtitle track was empty.")
+            subtitle_path.write_bytes(subtitle_bytes)
+            return subtitle_path
+        except Exception as exc:
+            last_error = exc
+            if not _is_rate_limit_error(exc) or attempt >= subtitle_retries:
+                break
+            time.sleep(retry_base_seconds * (2**attempt))
+
+    if last_error and _is_rate_limit_error(last_error):
+        raise ProcessingError(
+            "YouTube returned HTTP 429 while downloading subtitles. Wait a while before retrying, "
+            "or configure YTDLP_COOKIES_FILE with browser cookies and optionally YTDLP_PROXY for a different egress IP."
+        ) from last_error
+
+    raise ProcessingError(f"Could not download the selected subtitle track: {last_error}") from last_error
+
+
+def _select_json3_subtitle_track(info: dict[str, Any], language: str) -> SubtitleTrack:
+    subtitle_sources = [
+        ("manual", info.get("subtitles", {})),
+        ("automatic", info.get("automatic_captions", {})),
+    ]
+
+    for source_name, tracks_by_language in subtitle_sources:
+        if not isinstance(tracks_by_language, dict):
+            continue
+        matching_language = _matching_subtitle_language(tracks_by_language, language)
+        if not matching_language:
+            continue
+        tracks = tracks_by_language.get(matching_language, [])
+        if not isinstance(tracks, list):
+            continue
+        for track in tracks:
+            if isinstance(track, dict) and track.get("ext") == "json3" and isinstance(track.get("url"), str):
+                return SubtitleTrack(language=matching_language, source=source_name, url=track["url"])
 
     available_languages: list[str] = []
-    if isinstance(info, dict):
-        subtitle_languages = info.get("subtitles", {})
-        automatic_languages = info.get("automatic_captions", {})
-        if isinstance(subtitle_languages, dict):
-            available_languages.extend(subtitle_languages.keys())
-        if isinstance(automatic_languages, dict):
-            available_languages.extend(automatic_languages.keys())
+    for _source_name, tracks_by_language in subtitle_sources:
+        if isinstance(tracks_by_language, dict):
+            available_languages.extend(tracks_by_language.keys())
 
     unique_languages = ", ".join(sorted(set(available_languages))[:30])
     if unique_languages:
@@ -245,6 +317,26 @@ def _download_json3_subtitles(url: str, language: str, temp_dir: Path) -> Path:
             f"No json3 subtitles were found for language '{language}'. Available languages: {unique_languages}."
         )
     raise ProcessingError(f"No json3 subtitles were found for language '{language}'.")
+
+
+def _matching_subtitle_language(tracks_by_language: dict[str, Any], language: str) -> str | None:
+    if language in tracks_by_language:
+        return language
+
+    normalized_language = language.lower()
+    for available_language in tracks_by_language:
+        if available_language.lower() == normalized_language:
+            return available_language
+
+    for available_language in tracks_by_language:
+        if available_language.lower().split("-")[0] == normalized_language.split("-")[0]:
+            return available_language
+
+    return None
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    return "429" in str(error) or "too many requests" in str(error).lower()
 
 
 def _cut_audio_to_mp3(source_path: Path, output_path: Path, start_seconds: float, end_seconds: float) -> None:

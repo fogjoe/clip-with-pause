@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 TaskStatus = Literal["queued", "processing", "complete", "failed"]
@@ -12,9 +12,26 @@ class ClipProcessRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
     url: str = Field(..., min_length=1)
-    start_time: str | float | int = Field(..., alias="startTime")
-    end_time: str | float | int = Field(..., alias="endTime")
-    subtitle_language: str = Field("en", alias="subtitleLanguage", min_length=2, max_length=24)
+    start_time: str | float | int
+    end_time: str | float | int
+    subtitle_language: str = Field("en", min_length=2, max_length=24)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_camel_case_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        aliases = {
+            "startTime": "start_time",
+            "endTime": "end_time",
+            "subtitleLanguage": "subtitle_language",
+        }
+        for source, target in aliases.items():
+            if source in normalized and target not in normalized:
+                normalized[target] = normalized[source]
+        return normalized
 
     @field_validator("subtitle_language")
     @classmethod
@@ -62,4 +79,3 @@ class TaskStatusResponse(BaseModel):
 
 class ApiError(BaseModel):
     detail: str | dict[str, Any]
-
