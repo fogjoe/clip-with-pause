@@ -4,6 +4,12 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { LanguagePlayer } from "@/components/LanguagePlayer";
 import { assetUrl, createClipTask, getClipTask, type TaskResponse } from "@/lib/api";
 
+const SUBTITLE_LANGUAGE_OPTIONS = [
+  { label: "English", value: "en" },
+  { label: "Chinese", value: "zh" },
+  { label: "Spanish", value: "es" },
+];
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [startTime, setStartTime] = useState("");
@@ -137,13 +143,18 @@ export default function Home() {
 
               <label className="block">
                 <span className="mb-2 block text-sm font-medium text-neutral-700">Subtitle</span>
-                <input
-                  type="text"
+                <select
                   required
                   value={subtitleLanguage}
                   onChange={(event) => setSubtitleLanguage(event.target.value)}
-                  className="h-11 w-full rounded-md border border-neutral-300 px-3 text-sm text-neutral-950 outline-none focus:border-teal-700 focus:ring-2 focus:ring-teal-100"
-                />
+                  className="h-11 w-full rounded-md border border-neutral-300 bg-white px-3 text-sm text-neutral-950 outline-none focus:border-teal-700 focus:ring-2 focus:ring-teal-100"
+                >
+                  {SUBTITLE_LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
 

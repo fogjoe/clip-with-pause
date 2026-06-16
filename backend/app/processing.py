@@ -176,6 +176,7 @@ def _base_ydl_options(temp_dir: Path) -> dict[str, Any]:
         "cachedir": False,
         "retries": 5,
         "fragment_retries": 5,
+        "socket_timeout": float(os.getenv("YTDLP_SOCKET_TIMEOUT_SECONDS", "30")),
         "sleep_interval_requests": float(os.getenv("YTDLP_SLEEP_INTERVAL_REQUESTS", "1")),
         "extractor_args": {
             "youtube": {
@@ -274,14 +275,28 @@ def _download_json3_subtitles(info: dict[str, Any], language: str, temp_dir: Pat
             return subtitle_path
         except Exception as exc:
             last_error = exc
-            if not _is_rate_limit_error(exc) or attempt >= subtitle_retries:
+            if not _is_retryable_subtitle_error(exc) or attempt >= subtitle_retries:
                 break
-            time.sleep(retry_base_seconds * (2**attempt))
+            delay_seconds = retry_base_seconds * (2**attempt)
+            logger.warning(
+                "Retrying subtitle download after transient error, attempt %s of %s: %s",
+                attempt + 1,
+                subtitle_retries,
+                exc,
+            )
+            time.sleep(delay_seconds)
 
     if last_error and _is_rate_limit_error(last_error):
         raise ProcessingError(
             "YouTube returned HTTP 429 while downloading subtitles. Wait a while before retrying, "
             "or configure YTDLP_COOKIES_FILE with browser cookies and optionally YTDLP_PROXY for a different egress IP."
+        ) from last_error
+
+    if last_error and _is_transient_network_error(last_error):
+        raise ProcessingError(
+            "YouTube subtitle download failed after retrying because the network or TLS connection closed unexpectedly. "
+            "Retry the clip, and if it keeps happening check your Mac proxy/VPN/DNS settings or configure YTDLP_PROXY "
+            "with a stable proxy."
         ) from last_error
 
     raise ProcessingError(f"Could not download the selected subtitle track: {last_error}") from last_error
@@ -337,6 +352,32 @@ def _matching_subtitle_language(tracks_by_language: dict[str, Any], language: st
 
 def _is_rate_limit_error(error: Exception) -> bool:
     return "429" in str(error) or "too many requests" in str(error).lower()
+
+
+def _is_retryable_subtitle_error(error: Exception) -> bool:
+    return _is_rate_limit_error(error) or _is_transient_network_error(error)
+
+
+def _is_transient_network_error(error: Exception) -> bool:
+    message = str(error).lower()
+    if "certificate verify failed" in message:
+        return False
+
+    transient_markers = (
+        "unexpected_eof",
+        "eof occurred in violation of protocol",
+        "connection reset",
+        "connection aborted",
+        "connection closed",
+        "remote end closed connection",
+        "tls handshake",
+        "read timed out",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "network is unreachable",
+    )
+    return any(marker in message for marker in transient_markers)
 
 
 def _cut_audio_to_mp3(source_path: Path, output_path: Path, start_seconds: float, end_seconds: float) -> None:

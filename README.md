@@ -115,6 +115,7 @@ The backend image installs Node.js 22 and `yt-dlp-ejs` so `yt-dlp` can solve You
 - `YTDLP_COOKIES_FILE`: Optional cookie file path for `yt-dlp`.
 - `YTDLP_JS_RUNTIMES`: JavaScript runtime used by `yt-dlp` challenge solving. Defaults to `node`.
 - `YTDLP_PROXY`: Optional proxy URL for `yt-dlp`, for example `socks5://host.docker.internal:7890`.
+- `YTDLP_SOCKET_TIMEOUT_SECONDS`: Socket timeout for `yt-dlp` network requests.
 - `YTDLP_SLEEP_INTERVAL_REQUESTS`: Delay between `yt-dlp` HTTP requests.
 - `YTDLP_SUBTITLE_RETRIES`: Number of retry attempts for subtitle downloads.
 - `YTDLP_SUBTITLE_RETRY_BASE_SECONDS`: Base delay for subtitle retry backoff.
@@ -122,7 +123,7 @@ The backend image installs Node.js 22 and `yt-dlp-ejs` so `yt-dlp` can solve You
 
 ## YouTube Rate Limits
 
-YouTube can return `HTTP Error 429: Too Many Requests`, especially for subtitle downloads. The backend reduces request pressure by reusing the first `yt-dlp` extraction result and retrying direct json3 subtitle downloads with backoff.
+YouTube can return `HTTP Error 429: Too Many Requests`, especially for subtitle downloads. The backend reduces request pressure by reusing the first `yt-dlp` extraction result and retrying direct json3 subtitle downloads with backoff. Subtitle downloads also retry transient network and TLS failures such as `UNEXPECTED_EOF_WHILE_READING`.
 
 If 429 continues, export browser cookies to Netscape format, place the file at:
 
@@ -134,6 +135,7 @@ Then set this in `.env`:
 
 ```env
 YTDLP_COOKIES_FILE=/app/cookies/youtube-cookies.txt
+YTDLP_SOCKET_TIMEOUT_SECONDS=30
 YTDLP_SLEEP_INTERVAL_REQUESTS=2
 YTDLP_SUBTITLE_RETRIES=5
 YTDLP_SUBTITLE_RETRY_BASE_SECONDS=5

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Sentence } from "@/lib/api";
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5] as const;
+const SEEK_STEP_SECONDS = 5;
 
 type LanguagePlayerProps = {
   audioUrl: string;
@@ -153,6 +154,146 @@ export function LanguagePlayer({
     setActiveIndex(detectedIndex);
   }
 
+  function seekBy(deltaSeconds: number) {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    const audioDuration = Number.isFinite(audio.duration) ? audio.duration : duration;
+    const rawTime = audio.currentTime + deltaSeconds;
+    const nextTime = audioDuration > 0 ? Math.min(audioDuration, rawTime) : rawTime;
+    handleSeek(Math.max(0, nextTime));
+  }
+
+  function adjustPlaybackRate(direction: -1 | 1) {
+    const nearestIndex = SPEEDS.reduce((bestIndex, speed, index) => {
+      const bestDistance = Math.abs(SPEEDS[bestIndex] - playbackRate);
+      const nextDistance = Math.abs(speed - playbackRate);
+      return nextDistance < bestDistance ? index : bestIndex;
+    }, 0);
+    const nextIndex = Math.min(SPEEDS.length - 1, Math.max(0, nearestIndex + direction));
+    setPlaybackRate(SPEEDS[nextIndex]);
+  }
+
+  useEffect(() => {
+    function handleKeyboardShortcut(event: KeyboardEvent) {
+      if (shouldIgnoreKeyboardShortcut(event) || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      if (event.shiftKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        setCurrentSentence(activeIndexRef.current - 1, isPlaying);
+        return;
+      }
+
+      if (event.shiftKey && event.key === "ArrowRight") {
+        event.preventDefault();
+        setCurrentSentence(activeIndexRef.current + 1, isPlaying);
+        return;
+      }
+
+      switch (event.key) {
+        case " ":
+          if (!event.repeat) {
+            event.preventDefault();
+            togglePlayback();
+          }
+          return;
+        case "ArrowLeft":
+          event.preventDefault();
+          seekBy(-SEEK_STEP_SECONDS);
+          return;
+        case "ArrowRight":
+          event.preventDefault();
+          seekBy(SEEK_STEP_SECONDS);
+          return;
+        case "ArrowUp":
+        case "PageUp":
+          event.preventDefault();
+          setCurrentSentence(activeIndexRef.current - 1, isPlaying);
+          return;
+        case "ArrowDown":
+        case "PageDown":
+          event.preventDefault();
+          setCurrentSentence(activeIndexRef.current + 1, isPlaying);
+          return;
+        case "Home":
+          event.preventDefault();
+          setCurrentSentence(0, isPlaying);
+          return;
+        case "End":
+          event.preventDefault();
+          setCurrentSentence(sentences.length - 1, isPlaying);
+          return;
+        default:
+          break;
+      }
+
+      const key = event.key.toLowerCase();
+      switch (key) {
+        case "k":
+          if (!event.repeat) {
+            event.preventDefault();
+            togglePlayback();
+          }
+          return;
+        case "j":
+          event.preventDefault();
+          seekBy(-SEEK_STEP_SECONDS);
+          return;
+        case "l":
+          event.preventDefault();
+          seekBy(SEEK_STEP_SECONDS);
+          return;
+        case "r":
+          if (!event.repeat) {
+            event.preventDefault();
+            setCurrentSentence(activeIndexRef.current, isPlaying);
+          }
+          return;
+        case "s":
+          if (!event.repeat) {
+            event.preventDefault();
+            setShowSubtitles((value) => !value);
+          }
+          return;
+        case "f":
+          if (!event.repeat) {
+            event.preventDefault();
+            setFillMode((value) => !value);
+          }
+          return;
+        case "a":
+          if (!event.repeat) {
+            event.preventDefault();
+            setAutoAdvance((value) => !value);
+          }
+          return;
+        case "m":
+          if (!event.repeat) {
+            event.preventDefault();
+            setShowSentenceList((value) => !value);
+          }
+          return;
+        case ",":
+          event.preventDefault();
+          adjustPlaybackRate(-1);
+          return;
+        case ".":
+          event.preventDefault();
+          adjustPlaybackRate(1);
+          return;
+        default:
+          break;
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyboardShortcut);
+    return () => window.removeEventListener("keydown", handleKeyboardShortcut);
+  }, [duration, isPlaying, playbackRate, sentences.length]);
+
   return (
     <section className="flex min-h-screen flex-col bg-neutral-950 text-white">
       <audio
@@ -202,6 +343,7 @@ export function LanguagePlayer({
               onClick={togglePlayback}
               className="flex h-20 w-20 items-center justify-center rounded-full bg-white/90 text-3xl font-semibold text-neutral-950 shadow-lg hover:bg-white"
               aria-label={isPlaying ? "Pause" : "Play"}
+              aria-keyshortcuts="Space K"
             >
               {isPlaying ? "||" : ">"}
             </button>
@@ -239,6 +381,7 @@ export function LanguagePlayer({
           <button
             type="button"
             onClick={() => setShowSubtitles((value) => !value)}
+            aria-keyshortcuts="S"
             className={`h-9 rounded-md border px-3 ${
               showSubtitles
                 ? "border-teal-500 bg-teal-600 text-white"
@@ -251,6 +394,7 @@ export function LanguagePlayer({
           <button
             type="button"
             onClick={() => setFillMode((value) => !value)}
+            aria-keyshortcuts="F"
             className={`h-9 rounded-md border px-3 ${
               fillMode
                 ? "border-teal-500 bg-teal-600 text-white"
@@ -279,6 +423,7 @@ export function LanguagePlayer({
               checked={autoAdvance}
               onChange={(event) => setAutoAdvance(event.target.checked)}
               className="h-4 w-4 accent-teal-500"
+              aria-keyshortcuts="A"
             />
             Auto
           </label>
@@ -333,6 +478,7 @@ export function LanguagePlayer({
           disabled={activeIndex <= 0}
           className="flex h-11 w-11 items-center justify-center rounded-md text-2xl text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:text-neutral-600"
           aria-label="Previous sentence"
+          aria-keyshortcuts="ArrowUp PageUp Shift+ArrowLeft"
         >
           &larr;
         </button>
@@ -341,6 +487,7 @@ export function LanguagePlayer({
           onClick={() => setShowSentenceList((value) => !value)}
           className="flex h-11 w-11 items-center justify-center rounded-md text-xl text-white hover:bg-white/10"
           aria-label="Sentence list"
+          aria-keyshortcuts="M"
         >
           &#9776;
         </button>
@@ -349,6 +496,7 @@ export function LanguagePlayer({
           onClick={() => setCurrentSentence(activeIndex + 1, true)}
           disabled={activeIndex >= sentences.length - 1}
           className="h-11 min-w-0 rounded-md bg-teal-500 px-4 text-sm font-semibold text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:bg-neutral-700 sm:text-base"
+          aria-keyshortcuts="ArrowDown PageDown Shift+ArrowRight"
         >
           Next sentence &rarr;
         </button>
@@ -357,6 +505,7 @@ export function LanguagePlayer({
           onClick={togglePlayback}
           className="flex h-11 w-11 items-center justify-center rounded-md text-xl text-white hover:bg-white/10"
           aria-label={isPlaying ? "Pause" : "Play"}
+          aria-keyshortcuts="Space K"
         >
           {isPlaying ? "||" : ">"}
         </button>
@@ -372,6 +521,24 @@ export function LanguagePlayer({
       </footer>
     </section>
   );
+}
+
+function shouldIgnoreKeyboardShortcut(event: KeyboardEvent): boolean {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (target.isContentEditable) {
+    return true;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === "input" || tagName === "select" || tagName === "textarea") {
+    return true;
+  }
+
+  return (tagName === "button" || tagName === "a") && (event.key === " " || event.key === "Enter");
 }
 
 function findSentenceIndex(sentences: Sentence[], currentTime: number): number {
