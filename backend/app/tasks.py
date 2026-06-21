@@ -71,7 +71,7 @@ class TaskManager:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
     def _run_task(self, task_id: str, job: ClipJob) -> None:
-        self._update_task(task_id, status="processing", progress=15, message="Downloading audio.")
+        self._update_task(task_id, status="processing", progress=15, message="Preparing audio.")
         try:
             result = self.process_function(task_id, job, self.output_root, self.ttl_seconds)
             self._update_task(

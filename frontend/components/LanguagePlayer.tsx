@@ -182,25 +182,27 @@ export function LanguagePlayer({
         return;
       }
 
-      if (event.shiftKey && event.key === "ArrowLeft") {
+      if (event.shiftKey && isKey(event, "ArrowLeft")) {
         event.preventDefault();
         setCurrentSentence(activeIndexRef.current - 1, isPlaying);
         return;
       }
 
-      if (event.shiftKey && event.key === "ArrowRight") {
+      if (event.shiftKey && isKey(event, "ArrowRight")) {
         event.preventDefault();
         setCurrentSentence(activeIndexRef.current + 1, isPlaying);
         return;
       }
 
+      if (isSpaceKey(event)) {
+        if (!event.repeat) {
+          event.preventDefault();
+          togglePlayback();
+        }
+        return;
+      }
+
       switch (event.key) {
-        case " ":
-          if (!event.repeat) {
-            event.preventDefault();
-            togglePlayback();
-          }
-          return;
         case "ArrowLeft":
           event.preventDefault();
           seekBy(-SEEK_STEP_SECONDS);
@@ -292,7 +294,7 @@ export function LanguagePlayer({
 
     window.addEventListener("keydown", handleKeyboardShortcut);
     return () => window.removeEventListener("keydown", handleKeyboardShortcut);
-  }, [duration, isPlaying, playbackRate, sentences.length]);
+  }, [activeIndex, duration, isPlaying, playbackRate, sentences]);
 
   return (
     <section className="flex min-h-screen flex-col bg-neutral-950 text-white">
@@ -538,7 +540,15 @@ function shouldIgnoreKeyboardShortcut(event: KeyboardEvent): boolean {
     return true;
   }
 
-  return (tagName === "button" || tagName === "a") && (event.key === " " || event.key === "Enter");
+  return (tagName === "button" || tagName === "a") && event.key === "Enter";
+}
+
+function isSpaceKey(event: KeyboardEvent): boolean {
+  return event.key === " " || event.key === "Spacebar" || event.code === "Space";
+}
+
+function isKey(event: KeyboardEvent, key: string): boolean {
+  return event.key === key || event.code === key;
 }
 
 function findSentenceIndex(sentences: Sentence[], currentTime: number): number {

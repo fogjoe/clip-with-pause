@@ -22,9 +22,10 @@ RUN python -c "import static_ffmpeg; static_ffmpeg.add_paths()"
 
 COPY backend/app /app/app
 
-RUN mkdir -p /app/data/output
+RUN mkdir -p /app/data/output /app/data/cache
 
 ENV CLIP_OUTPUT_DIR=/app/data/output
+ENV CLIP_CACHE_DIR=/app/data/cache
 
 EXPOSE 8000
 

@@ -73,7 +73,7 @@ Poll task status:
 GET /api/tasks/{taskId}
 ```
 
-Completed tasks return `audioUrl`, `subtitlesUrl`, sentence timing data, and an expiration timestamp. Temporary download files are deleted after each task. Final MP3 and JSON outputs are stored under a task-specific directory and removed after the configured TTL.
+Completed tasks return `audioUrl`, `subtitlesUrl`, sentence timing data, and an expiration timestamp. Full source audio and subtitles are cached by YouTube video ID, so the first clip from a video downloads the source and later clips from the same video can cut from cached files. Final MP3 and JSON outputs are stored under a task-specific directory and removed after the configured TTL.
 
 ## Cloudflare Tunnel
 
@@ -95,6 +95,19 @@ Copy `.env.example` to `.env` and set `TUNNEL_TOKEN`.
 docker compose up --build -d
 ```
 
+After the images have already been built, start or restart the public site with:
+
+```bash
+docker compose up -d
+```
+
+Check whether `audio.fogjoe.com` is connected through Cloudflare Tunnel:
+
+```bash
+docker compose ps
+docker compose logs -f cloudflared
+```
+
 Local service URLs:
 
 ```text
@@ -110,6 +123,7 @@ The backend image installs Node.js 22 and `yt-dlp-ejs` so `yt-dlp` can solve You
 - `TUNNEL_TOKEN`: Cloudflare Tunnel token.
 - `CORS_ORIGINS`: Allowed CORS origins. Defaults to `https://audio.fogjoe.com`.
 - `OUTPUT_TTL_SECONDS`: Retention time for generated MP3 and JSON outputs.
+- `SOURCE_CACHE_TTL_SECONDS`: Retention time for cached full source audio and subtitles. Defaults to 7 days. Set to `0` to disable source cache cleanup.
 - `TASK_MAX_WORKERS`: Number of concurrent backend processing workers.
 - `MAX_CLIP_SECONDS`: Maximum accepted clip length.
 - `YTDLP_COOKIES_FILE`: Optional cookie file path for `yt-dlp`.
@@ -130,6 +144,15 @@ If 429 continues, export browser cookies to Netscape format, place the file at:
 ```text
 backend/cookies/youtube-cookies.txt
 ```
+
+On macOS with Chrome and host `yt-dlp` installed, refresh the cookie file with:
+
+```bash
+yt-dlp --cookies-from-browser chrome --cookies /tmp/youtube-cookies.txt --skip-download 'https://www.youtube.com/watch?v=VIDEO_ID'
+awk 'BEGIN{FS=OFS="\t"} /^#/ {print; next} NF>=7 && ($1 ~ /(^|\.)youtube\.com$/ || $1 ~ /(^|\.)google\.com$/ || $1 ~ /(^|\.)googleusercontent\.com$/ || $1 ~ /(^|\.)gstatic\.com$/) {print}' /tmp/youtube-cookies.txt > backend/cookies/youtube-cookies.txt
+```
+
+Allow macOS Keychain access if prompted. The filtered file keeps only Google/YouTube-related cookies for the backend.
 
 Then set this in `.env`:
 

@@ -8,11 +8,12 @@ import shutil
 import subprocess
 import tempfile
 import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
 
@@ -22,6 +23,7 @@ from app.subtitles import extract_sentences, load_json3
 logger = logging.getLogger(__name__)
 
 YOUTUBE_CLIENTS = ["tv", "mweb", "android", "ios", "web"]
+SOURCE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 ALLOWED_YOUTUBE_HOSTS = {
     "youtube.com",
     "www.youtube.com",
@@ -30,6 +32,9 @@ ALLOWED_YOUTUBE_HOSTS = {
     "youtu.be",
     "www.youtu.be",
 }
+
+_SOURCE_CACHE_LOCKS: dict[str, threading.Lock] = {}
+_SOURCE_CACHE_LOCKS_GUARD = threading.Lock()
 
 
 class ProcessingError(RuntimeError):
@@ -56,6 +61,7 @@ class ClipProcessingResult:
 class AudioDownloadResult:
     source_path: Path
     info: dict[str, Any]
+    cache_dir: Path
 
 
 @dataclass(frozen=True)
@@ -118,11 +124,16 @@ def process_clip_task(task_id: str, job: ClipJob, output_root: Path, ttl_seconds
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        audio_download = _download_audio(job.url, temp_dir)
+        audio_download = _get_cached_audio(job.url, temp_dir)
         audio_output = output_dir / "clip.mp3"
         _cut_audio_to_mp3(audio_download.source_path, audio_output, job.start_seconds, job.end_seconds)
 
-        subtitle_file = _download_json3_subtitles(audio_download.info, job.subtitle_language, temp_dir)
+        subtitle_file = _get_cached_json3_subtitles(
+            audio_download.info,
+            job.subtitle_language,
+            temp_dir,
+            audio_download.cache_dir,
+        )
         subtitle_data = load_json3(subtitle_file)
         sentences = extract_sentences(subtitle_data, job.start_seconds, job.end_seconds)
         if not sentences:
@@ -165,6 +176,26 @@ def cleanup_expired_outputs(output_root: Path, ttl_seconds: int) -> None:
                 shutil.rmtree(child, ignore_errors=True)
         except OSError:
             logger.warning("Could not inspect output directory for cleanup: %s", child)
+
+
+def cleanup_expired_source_cache(cache_root: Path | None = None, ttl_seconds: int | None = None) -> None:
+    if cache_root is None:
+        cache_root = _source_cache_root()
+    if ttl_seconds is None:
+        ttl_seconds = _source_cache_ttl_seconds()
+    if ttl_seconds <= 0:
+        return
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).timestamp()
+    for child in cache_root.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            if now - child.stat().st_mtime > ttl_seconds:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            logger.warning("Could not inspect source cache directory for cleanup: %s", child)
 
 
 def _base_ydl_options(temp_dir: Path) -> dict[str, Any]:
@@ -225,12 +256,28 @@ def _configured_js_runtimes() -> dict[str, dict[str, str]]:
     return runtimes
 
 
-def _download_audio(url: str, temp_dir: Path) -> AudioDownloadResult:
-    options = _base_ydl_options(temp_dir)
+def _get_cached_audio(url: str, temp_dir: Path) -> AudioDownloadResult:
+    cache_key = _source_cache_key(url)
+    cache_dir = _source_cache_root() / cache_key
+
+    with _source_cache_lock(cache_key):
+        cached_audio = _load_cached_audio(cache_dir)
+        if cached_audio:
+            logger.info("Using cached source audio for %s", cache_key)
+            return cached_audio
+
+        logger.info("Downloading source audio for %s", cache_key)
+        return _download_audio_to_cache(url, temp_dir, cache_dir)
+
+
+def _download_audio_to_cache(url: str, temp_dir: Path, cache_dir: Path) -> AudioDownloadResult:
+    download_dir = temp_dir / "audio-download"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    options = _base_ydl_options(download_dir)
     options.update(
         {
             "format": "bestaudio/best",
-            "outtmpl": str(temp_dir / "audio.%(ext)s"),
+            "outtmpl": str(download_dir / "audio.%(ext)s"),
         }
     )
 
@@ -240,17 +287,134 @@ def _download_audio(url: str, temp_dir: Path) -> AudioDownloadResult:
             raise ProcessingError("yt-dlp did not return metadata for the audio download.")
 
         prepared_path = Path(downloader.prepare_filename(info))
-        if prepared_path.exists():
-            return AudioDownloadResult(source_path=prepared_path, info=info)
+        if not prepared_path.exists():
+            prepared_path = _newest_downloaded_audio(download_dir)
 
+    if not prepared_path:
+        raise ProcessingError("yt-dlp did not produce an audio file.")
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for old_source in cache_dir.glob("source.*"):
+        old_source.unlink(missing_ok=True)
+
+    cached_source_path = cache_dir / f"source{prepared_path.suffix}"
+    shutil.move(str(prepared_path), cached_source_path)
+
+    info_path = cache_dir / "info.json"
+    with info_path.open("w", encoding="utf-8") as info_file:
+        json.dump(downloader.sanitize_info(info), info_file, ensure_ascii=False)
+
+    _touch_cache_entry(cache_dir)
+    return AudioDownloadResult(source_path=cached_source_path, info=info, cache_dir=cache_dir)
+
+
+def _newest_downloaded_audio(download_dir: Path) -> Path | None:
     candidates = [
         path
-        for path in temp_dir.iterdir()
+        for path in download_dir.iterdir()
         if path.is_file() and not path.name.endswith((".part", ".json3"))
     ]
     if not candidates:
-        raise ProcessingError("yt-dlp did not produce an audio file.")
-    return AudioDownloadResult(source_path=max(candidates, key=lambda path: path.stat().st_mtime), info=info)
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _load_cached_audio(cache_dir: Path) -> AudioDownloadResult | None:
+    info_path = cache_dir / "info.json"
+    if not info_path.is_file():
+        return None
+
+    source_candidates = [
+        path
+        for path in cache_dir.glob("source.*")
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    if not source_candidates:
+        return None
+
+    try:
+        with info_path.open("r", encoding="utf-8") as info_file:
+            info = json.load(info_file)
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Ignoring unreadable source cache metadata: %s", info_path)
+        return None
+
+    source_path = max(source_candidates, key=lambda path: path.stat().st_mtime)
+    _touch_cache_entry(cache_dir)
+    return AudioDownloadResult(source_path=source_path, info=info, cache_dir=cache_dir)
+
+
+def _touch_cache_entry(cache_dir: Path) -> None:
+    now = time.time()
+    try:
+        os.utime(cache_dir, (now, now))
+        for child in cache_dir.iterdir():
+            os.utime(child, (now, now))
+    except OSError:
+        logger.warning("Could not update source cache timestamp: %s", cache_dir)
+
+
+def _source_cache_key(url: str) -> str:
+    parsed_url = urlparse(url)
+    host = parsed_url.netloc.lower()
+    video_id = ""
+
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}:
+        video_id = parse_qs(parsed_url.query).get("v", [""])[0]
+        path_parts = [part for part in parsed_url.path.split("/") if part]
+        if not video_id and len(path_parts) >= 2 and path_parts[0] in {"shorts", "embed", "live"}:
+            video_id = path_parts[1]
+    elif host in {"youtu.be", "www.youtu.be"}:
+        video_id = parsed_url.path.strip("/").split("/")[0]
+
+    if video_id and re.fullmatch(r"[\w-]{6,128}", video_id):
+        return video_id
+
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "-", url).strip("-")
+    return safe_key[:120] or "unknown-source"
+
+
+def _source_cache_root() -> Path:
+    configured_root = os.getenv("CLIP_CACHE_DIR")
+    if configured_root:
+        return Path(configured_root)
+    if Path("/app").exists():
+        return Path("/app/data/cache")
+    return Path.cwd() / "data" / "cache"
+
+
+def _source_cache_ttl_seconds() -> int:
+    return int(os.getenv("SOURCE_CACHE_TTL_SECONDS", str(SOURCE_CACHE_TTL_SECONDS)))
+
+
+def _source_cache_lock(cache_key: str) -> threading.Lock:
+    with _SOURCE_CACHE_LOCKS_GUARD:
+        lock = _SOURCE_CACHE_LOCKS.get(cache_key)
+        if not lock:
+            lock = threading.Lock()
+            _SOURCE_CACHE_LOCKS[cache_key] = lock
+        return lock
+
+
+def _get_cached_json3_subtitles(info: dict[str, Any], language: str, temp_dir: Path, cache_dir: Path) -> Path:
+    language_cache_key = _safe_cache_component(language.lower())
+    subtitle_cache_path = cache_dir / f"subtitles.{language_cache_key}.json3"
+    if subtitle_cache_path.is_file() and subtitle_cache_path.stat().st_size > 0:
+        _touch_cache_entry(cache_dir)
+        return subtitle_cache_path
+
+    subtitle_file = _download_json3_subtitles(info, language, temp_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    temp_cache_path = cache_dir / f"{subtitle_cache_path.name}.tmp-{threading.get_ident()}"
+    shutil.copy2(subtitle_file, temp_cache_path)
+    temp_cache_path.replace(subtitle_cache_path)
+    _touch_cache_entry(cache_dir)
+    return subtitle_cache_path
+
+
+def _safe_cache_component(value: str) -> str:
+    safe_value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-")
+    return safe_value[:80] or "default"
 
 
 def _download_json3_subtitles(info: dict[str, Any], language: str, temp_dir: Path) -> Path:

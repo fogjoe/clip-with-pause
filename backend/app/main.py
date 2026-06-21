@@ -10,12 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.models import ClipProcessRequest, ClipResult, Sentence, TaskCreateResponse, TaskStatusResponse
-from app.processing import cleanup_expired_outputs, process_clip_task, validate_clip_job
+from app.processing import cleanup_expired_outputs, cleanup_expired_source_cache, process_clip_task, validate_clip_job
 from app.tasks import ClipTask, TaskManager
 
 
 OUTPUT_ROOT = Path(os.getenv("CLIP_OUTPUT_DIR", "/app/data/output"))
+SOURCE_CACHE_ROOT = Path(os.getenv("CLIP_CACHE_DIR", "/app/data/cache" if Path("/app").exists() else "data/cache"))
 OUTPUT_TTL_SECONDS = int(os.getenv("OUTPUT_TTL_SECONDS", "86400"))
+SOURCE_CACHE_TTL_SECONDS = int(os.getenv("SOURCE_CACHE_TTL_SECONDS", "604800"))
 TASK_MAX_WORKERS = int(os.getenv("TASK_MAX_WORKERS", "2"))
 TASK_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
 MEDIA_FILENAMES = {
@@ -34,7 +36,9 @@ task_manager = TaskManager(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    SOURCE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     cleanup_expired_outputs(OUTPUT_ROOT, OUTPUT_TTL_SECONDS)
+    cleanup_expired_source_cache(SOURCE_CACHE_ROOT, SOURCE_CACHE_TTL_SECONDS)
     yield
     task_manager.shutdown()
 
@@ -136,4 +140,3 @@ def _task_to_response(task: ClipTask) -> TaskStatusResponse:
         error=task.error,
         result=result,
     )
-
