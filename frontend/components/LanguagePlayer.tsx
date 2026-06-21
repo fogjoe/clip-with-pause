@@ -5,6 +5,7 @@ import type { Sentence } from "@/lib/api";
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5] as const;
 const SEEK_STEP_SECONDS = 5;
+const SENTENCE_END_EPSILON_SECONDS = 0.04;
 
 type LanguagePlayerProps = {
   audioUrl: string;
@@ -101,6 +102,31 @@ export function LanguagePlayer({
     }
   }
 
+  function handleSentenceEnd(audio: HTMLAudioElement, currentSentence: Sentence, shouldContinuePlaying: boolean) {
+    if (completedLoopsRef.current + 1 < loopTarget) {
+      completedLoopsRef.current += 1;
+      audio.currentTime = currentSentence.start;
+      setCurrentTime(currentSentence.start);
+      if (shouldContinuePlaying) {
+        void audio.play();
+      }
+      return shouldContinuePlaying;
+    }
+
+    completedLoopsRef.current = 0;
+    if (autoAdvance && activeIndexRef.current < sentences.length - 1) {
+      setCurrentSentence(activeIndexRef.current + 1, shouldContinuePlaying);
+      return shouldContinuePlaying;
+    }
+
+    const audioDuration = Number.isFinite(audio.duration) ? audio.duration : currentSentence.end;
+    const stopTime = Math.min(currentSentence.end, audioDuration);
+    audio.pause();
+    audio.currentTime = stopTime;
+    setCurrentTime(stopTime);
+    return false;
+  }
+
   function handleTimeUpdate() {
     const audio = audioRef.current;
     if (!audio || sentences.length === 0) {
@@ -111,25 +137,16 @@ export function LanguagePlayer({
     setCurrentTime(nextTime);
     const currentSentence = sentences[activeIndexRef.current] ?? sentences[0];
 
-    if (nextTime >= currentSentence.end - 0.04 && nextTime <= currentSentence.end + 0.75) {
-      if (completedLoopsRef.current + 1 < loopTarget) {
-        completedLoopsRef.current += 1;
-        audio.currentTime = currentSentence.start;
-        setCurrentTime(currentSentence.start);
-        if (!audio.paused) {
-          void audio.play();
-        }
-        return;
-      }
+    if (nextTime >= currentSentence.end - SENTENCE_END_EPSILON_SECONDS) {
+      handleSentenceEnd(audio, currentSentence, !audio.paused);
+      return;
+    }
 
+    if (nextTime < currentSentence.start - SENTENCE_END_EPSILON_SECONDS) {
+      const detectedIndex = findSentenceIndex(sentences, nextTime);
       completedLoopsRef.current = 0;
-      if (autoAdvance && activeIndexRef.current < sentences.length - 1) {
-        setCurrentSentence(activeIndexRef.current + 1, !audio.paused);
-      } else {
-        audio.pause();
-        audio.currentTime = currentSentence.end;
-        setCurrentTime(currentSentence.end);
-      }
+      activeIndexRef.current = detectedIndex;
+      setActiveIndex(detectedIndex);
       return;
     }
 
@@ -138,6 +155,19 @@ export function LanguagePlayer({
       completedLoopsRef.current = 0;
       activeIndexRef.current = detectedIndex;
       setActiveIndex(detectedIndex);
+    }
+  }
+
+  function handleMediaEnded(audio: HTMLAudioElement) {
+    if (sentences.length === 0) {
+      setIsPlaying(false);
+      return;
+    }
+
+    const currentSentence = sentences[activeIndexRef.current] ?? sentences[sentences.length - 1];
+    const isContinuing = handleSentenceEnd(audio, currentSentence, true);
+    if (!isContinuing) {
+      setIsPlaying(false);
     }
   }
 
@@ -312,7 +342,7 @@ export function LanguagePlayer({
         }}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
-        onEnded={() => setIsPlaying(false)}
+        onEnded={(event) => handleMediaEnded(event.currentTarget)}
         onTimeUpdate={handleTimeUpdate}
       />
 

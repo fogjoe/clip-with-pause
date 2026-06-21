@@ -26,10 +26,17 @@ def load_json3(path: Path) -> dict[str, Any]:
     return data
 
 
-def extract_sentences(data: dict[str, Any], clip_start: float, clip_end: float) -> list[dict[str, Any]]:
-    fragments = _extract_fragments(data, clip_start, clip_end)
+def extract_sentences(
+    data: dict[str, Any],
+    clip_start: float,
+    clip_end: float,
+    max_end_extension: float = 0,
+) -> list[dict[str, Any]]:
+    search_end = clip_end + max(0, max_end_extension)
+    fragments = _extract_fragments(data, clip_start, search_end)
     sentences = _group_fragments_into_sentences(fragments, clip_start)
-    return sentences
+    requested_duration = clip_end - clip_start
+    return [sentence for sentence in sentences if sentence["start"] < requested_duration]
 
 
 def _extract_fragments(data: dict[str, Any], clip_start: float, clip_end: float) -> list[SubtitleFragment]:
@@ -154,4 +161,3 @@ def _join_caption_parts(parts: list[str]) -> str:
     text = re.sub(r"([([{])\s+", r"\1", text)
     text = SPACE_RE.sub(" ", text)
     return text.strip()
-

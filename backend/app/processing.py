@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 YOUTUBE_CLIENTS = ["tv", "mweb", "android", "ios", "web"]
 SOURCE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+COMPLETE_SENTENCE_MAX_EXTENSION_SECONDS = 20.0
+CLIP_TAIL_PADDING_SECONDS = 0.35
 ALLOWED_YOUTUBE_HOSTS = {
     "youtube.com",
     "www.youtube.com",
@@ -125,9 +127,6 @@ def process_clip_task(task_id: str, job: ClipJob, output_root: Path, ttl_seconds
 
     try:
         audio_download = _get_cached_audio(job.url, temp_dir)
-        audio_output = output_dir / "clip.mp3"
-        _cut_audio_to_mp3(audio_download.source_path, audio_output, job.start_seconds, job.end_seconds)
-
         subtitle_file = _get_cached_json3_subtitles(
             audio_download.info,
             job.subtitle_language,
@@ -135,16 +134,26 @@ def process_clip_task(task_id: str, job: ClipJob, output_root: Path, ttl_seconds
             audio_download.cache_dir,
         )
         subtitle_data = load_json3(subtitle_file)
-        sentences = extract_sentences(subtitle_data, job.start_seconds, job.end_seconds)
+        sentences = extract_sentences(
+            subtitle_data,
+            job.start_seconds,
+            job.end_seconds,
+            max_end_extension=_complete_sentence_max_extension_seconds(),
+        )
         if not sentences:
             raise ProcessingError("No subtitle sentences were found inside the requested timeframe.")
+
+        effective_end_seconds = _effective_audio_end_seconds(job, sentences, audio_download.info)
+        audio_output = output_dir / "clip.mp3"
+        _cut_audio_to_mp3(audio_download.source_path, audio_output, job.start_seconds, effective_end_seconds)
 
         subtitles_output = output_dir / "subtitles.json"
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
         payload = {
             "sourceUrl": job.url,
             "clipStart": job.start_seconds,
-            "clipEnd": job.end_seconds,
+            "clipEnd": effective_end_seconds,
+            "requestedClipEnd": job.end_seconds,
             "subtitleLanguage": job.subtitle_language,
             "sentences": sentences,
             "expiresAt": expires_at.isoformat(),
@@ -196,6 +205,48 @@ def cleanup_expired_source_cache(cache_root: Path | None = None, ttl_seconds: in
                 shutil.rmtree(child, ignore_errors=True)
         except OSError:
             logger.warning("Could not inspect source cache directory for cleanup: %s", child)
+
+
+def _complete_sentence_max_extension_seconds() -> float:
+    return _float_env("COMPLETE_SENTENCE_MAX_EXTENSION_SECONDS", COMPLETE_SENTENCE_MAX_EXTENSION_SECONDS)
+
+
+def _clip_tail_padding_seconds() -> float:
+    return _float_env("CLIP_TAIL_PADDING_SECONDS", CLIP_TAIL_PADDING_SECONDS)
+
+
+def _effective_audio_end_seconds(job: ClipJob, sentences: list[dict[str, Any]], info: dict[str, Any]) -> float:
+    end_seconds = job.end_seconds
+    if sentences:
+        try:
+            end_seconds = max(end_seconds, job.start_seconds + float(sentences[-1]["end"]))
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Could not read final sentence end time for clip extension.")
+
+    end_seconds += _clip_tail_padding_seconds()
+    source_duration = _source_duration_seconds(info)
+    if source_duration is not None:
+        end_seconds = min(end_seconds, source_duration)
+
+    return max(job.start_seconds + 0.001, end_seconds)
+
+
+def _source_duration_seconds(info: dict[str, Any]) -> float | None:
+    duration = info.get("duration")
+    if isinstance(duration, int | float) and duration > 0:
+        return float(duration)
+    return None
+
+
+def _float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if not raw_value:
+        return default
+    try:
+        return max(0, float(raw_value))
+    except ValueError:
+        logger.warning("Ignoring invalid %s value: %s", name, raw_value)
+        return default
 
 
 def _base_ydl_options(temp_dir: Path) -> dict[str, Any]:

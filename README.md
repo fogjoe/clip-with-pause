@@ -124,6 +124,8 @@ The backend image installs Node.js 22 and `yt-dlp-ejs` so `yt-dlp` can solve You
 - `CORS_ORIGINS`: Allowed CORS origins. Defaults to `https://audio.fogjoe.com`.
 - `OUTPUT_TTL_SECONDS`: Retention time for generated MP3 and JSON outputs.
 - `SOURCE_CACHE_TTL_SECONDS`: Retention time for cached full source audio and subtitles. Defaults to 7 days. Set to `0` to disable source cache cleanup.
+- `COMPLETE_SENTENCE_MAX_EXTENSION_SECONDS`: Maximum extra source time to scan so the final overlapping sentence can finish. Defaults to 20 seconds.
+- `CLIP_TAIL_PADDING_SECONDS`: Extra audio padding after the final sentence end. Defaults to 0.35 seconds.
 - `TASK_MAX_WORKERS`: Number of concurrent backend processing workers.
 - `MAX_CLIP_SECONDS`: Maximum accepted clip length.
 - `YTDLP_COOKIES_FILE`: Optional cookie file path for `yt-dlp`.
